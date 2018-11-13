@@ -196,24 +196,111 @@ class ModelMetaclass(type):
         return type.__new__(cls, name, bases, attrs)    # 返回当前准备创建的类的对象、类的名字、类继承的基类集合、类的方法集合
 
 
+class Model(dict, metaclass=ModelMetaclass):
+    """ 定义一个对应数据库数据类型的模板类，通过继承，子类有dict的特性和元类的类与属性的映射关系 """
+    # 由模板类衍生其他类时，这个模板类没重新定义__new__()方法，因此会使用父类ModelMetaclass的__new__()来生成衍生类，从而实现ORM
+    def __init__(self, **kw):
+        super(Model, self).__init__(**kw)
 
+    def __getattr__(self, key):
+        """ 动态属性获取 """
+        try:
+            return self[key]
+        except KeyError:
+            raise AttributeError(r"'Model' object has no attribute '%s'" % key)
 
+    def __setattr__(self, key, value):
+        """ 动态属性设置 """
+        self[key] = value
 
+    def getValue(self, key):
+        """ 返回属性值，默认None """
+        return getattr(self, key, None)
 
+    def getValueOrDefault(self, key):
+        """ 返回属性值，空则返回默认值 """
+        value = getattr(self, key, None)
+        if value is None:
+            field = self.__mappings__[key]  # 查询属性对应的列的数量的默认值
+            if field.default is not None:
+                value = field.default() if callable(field.default) else field.default
+                logging.debug('using default value for %s:%s' % (key, str(value)))
+                setattr(self, key, value)
 
+        return value
 
+    @classmethod    # 类方法，对应查询方法，默认查整个表，通过where、limit设置查询条件
+    async def findAll(cls, where=None, args=None, **kw):
+        """ find objects by where clause. """
+        sql = [cls.__select__]  # 用一个列表存储select语句
+        if where:   # 添加一个条件
+            sql.append('where')
+            sql.append(where)
 
+        if args is None:
+            args = []
 
+        orderBy = kw.get('orderBy', None)   # 对查询结果排序
+        if orderBy:
+            sql.append('order by')
+            sql.append(orderBy)
 
+        limit = kw.get('limit', None) # 截取查询结果
+        if limit is not None:
+            sql.append('limit')
+            if isinstance(limit, int):  # 截取当前limit条记录
+                sql.append('?')
+                args.append(limit)  # 整型追加到列表后面
+            elif isinstance(limit, tuple) and len(limit) == 2:  # 分页
+                sql.append('?, ?')
+                args.extend(limit)  # 将limit合并args列表里面
+            else:
+                raise ValueError('Invalid limit value: %s' % limit)
 
+        rs = await select(' '.join(sql), args)   # 构造新的select语句，返回[{},{},{}]
+        return [cls(**r) for r in rs]   # 返回一个列表，每个元素都是一个dict，相当于一行记录
 
+    @classmethod    # 类方法，查询特定列，可通过where设置条件
+    async def findNumber(cls, selectField, where=None, args=None):
+        """ find number by select and where """
+        sql = ['select %s _num_ from %s' % (selectField, cls.__table__)]    # _num_是SQL的一个字段别名用法，AS关键字可以省略
+        if where:   # 添加where字段
+            sql.append('where')
+            sql.append(where)
 
+        rs = await select(' '.join(sql), args, 1)
+        if len(rs) == 0:
+            return None
+        return rs[0]['_num_']  # 根据别名key取值
 
+    @classmethod    # 类方法，根据主键查询一条记录
+    async def find(cls, pk):
+        """ find object by primary key """
+        rs = await select('%s where `%s`=?'% (cls.__select__, cls.__primary_key__, [pk], 1))
+        if len(rs) == 0:
+            return None
+        return cls(**rs[0])     # 将dict作为关键字参数传入当前类的对象
 
+    async def save(self):
+        """ 实例方法，映射插入记录 """
+        args = list(map(self.getValueOrDefault, self.__fields__))   # 非主键类的值列表
+        args.append(self.getValueOrDefault(self.__primary_key__))   # 添加主键值
+        rows = await execute(self.__insert__, args)     # 执行insert语句
+        if rows != 1:
+            logging.warning('failed to insert record: affected rows: %s' % rows)
 
+    async def update(self):
+        """ 实例方法，映射更新记录 """
+        args = list(map(self.getValue, self.__fields__))
+        args.append(self.getValue(self.__primary_key__))
+        rows = await execute(self.__update__, args)
+        if rows != 1:
+            logging.warning('failed to update by primary key: affected rows: %s' % rows)
 
-
-
-
-
+    async def delete(self):
+        """ 实例方法，映射根据主键值删除记录 """
+        args = [self.getValue(self.__primary_key__)]
+        rows = await execute(self.__delete__, args)
+        if rows != 1:
+            logging.warning('failed to delete by primary key: affected rows: %s' % rows)
 
