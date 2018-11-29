@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 # -*- coding: utf-8 -*-
 
 import asyncio, logging
@@ -146,7 +146,7 @@ class FloatField(Field):
         super().__init__(name, column_type, primary_key, default)
 
 
-class TextFiedl(Field):
+class TextField(Field):
     """ 定义文本型类，继承Field, 在orm中对应数据的 TEXT 长文本类型 """
 
     def __init__(self, name=None, column_type='text', default=None):
